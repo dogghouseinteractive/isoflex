@@ -56,6 +56,7 @@ rsync -avz --progress --delete \
     --exclude='node_modules' \
     --exclude='.DS_Store' \
     --exclude='*.sh' \
+    --exclude='*.md' \
     --exclude='deploy-to-myvesta.sh' \
     --exclude='setup-ssh-key.sh' \
     ./ \

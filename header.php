@@ -24,7 +24,6 @@
 <?php $hide_primary_nav = (get_field('hide_top_primary_nav', 'option') ? get_field('hide_top_primary_nav', 'option')[0] : ''); ?>
 <?php $left_nav_expanded = (get_field('expand_left_primary_menu_by_default', 'option') ? get_field('expand_left_primary_menu_by_default', 'option')[0] : ''); ?>
 <body <?php body_class(); ?>>
-	:)
 <header class="site-header" role="banner">
 	<div class="container">
 		<?php $custom_logo = get_custom_logo(); ?>

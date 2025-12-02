@@ -1,57 +1,59 @@
-# Deployment Instructions for isoflex.com
+# Deployment Instructions for isoflex.com (dev.isoflex.com)
 
-## One-Time Setup
+## ✅ Setup Complete!
 
-### Step 1: Set Up SSH Key Authentication
+SSH key authentication has been configured and the deployment script is ready to use.
 
-Open your terminal and run:
+**Deployment Target:** dev.isoflex.com (Development Environment)
+**Server:** isoflex.com (44.230.128.123)
+**Theme Path:** `/home/isoflex_doghouse/web/dev.isoflex.com/public_html/wp-content/themes/isoflex/`
 
-```bash
-cd "/Users/troycono/Documents/Git Repos/isoflex.com"
-
-# Copy your SSH key to the server (you'll be prompted for password once)
-ssh-copy-id -i ~/.ssh/id_ed25519.pub isoflex_doghouse@isoflex.com
-```
-
-**Password when prompted:** `2JkJ4XGJL3N24MSK`
-
-### Step 2: Test SSH Connection
-
-After adding the key, test the connection:
-
-```bash
-ssh isoflex_doghouse@isoflex.com "pwd"
-```
-
-If this works without asking for a password, you're all set!
-
-### Step 3: Find WordPress Path (First time only)
-
-Once connected, find where WordPress is installed:
-
-```bash
-ssh isoflex_doghouse@isoflex.com "find ~ -type d -name 'wp-content' 2>/dev/null | head -1"
-```
-
-This will show you the path. It's probably something like:
-- `/home/isoflex_doghouse/public_html/wp-content`
-- or `/home/isoflex_doghouse/web/isoflex.com/public_html/wp-content`
+---
 
 ## Deploying Changes
 
-Once SSH is set up, deploy with:
+### Standard Deployment Workflow
+
+1. **Make your changes** in `/Users/troycono/Documents/Git Repos/isoflex.com/`
+2. **Test locally** on Local by WPEngine (changes appear instantly via symlink)
+3. **Commit to Git:**
+   ```bash
+   cd "/Users/troycono/Documents/Git Repos/isoflex.com"
+   git add -A
+   git commit -m "Your commit message"
+   git push origin main
+   ```
+4. **Deploy to dev.isoflex.com:**
+   ```bash
+   ./deploy-to-myvesta.sh
+   ```
+
+### Quick Deploy Command
+
+If you've already committed your changes:
 
 ```bash
-cd "/Users/troycono/Documents/Git Repos/isoflex.com"
-./deploy-to-myvesta.sh
+cd "/Users/troycono/Documents/Git Repos/isoflex.com" && ./deploy-to-myvesta.sh
 ```
 
-## Manual Deployment (Alternative)
+---
 
-If the script doesn't work, you can manually deploy using rsync:
+## What the Deployment Script Does
+
+The `deploy-to-myvesta.sh` script will:
+- ✅ Check for uncommitted changes and prompt you to commit
+- ✅ Create the theme directory if needed
+- ✅ Sync all files to dev.isoflex.com via rsync
+- ✅ Exclude unnecessary files (.git, node_modules, .DS_Store, etc.)
+- ✅ Show progress with colored output
+
+---
+
+## Manual Deployment (If Script Fails)
+
+Use rsync directly:
 
 ```bash
-# Replace WORDPRESS_PATH with the actual path from Step 3
 rsync -avz --delete \
     --exclude='.git' \
     --exclude='.gitignore' \
@@ -60,33 +62,42 @@ rsync -avz --delete \
     --exclude='*.sh' \
     --exclude='*.md' \
     ./ \
-    isoflex_doghouse@isoflex.com:/path/to/wp-content/themes/isoflex/
+    isoflex_doghouse@isoflex.com:/home/isoflex_doghouse/web/dev.isoflex.com/public_html/wp-content/themes/isoflex/
 ```
+
+---
 
 ## Troubleshooting
 
-### SSH Connection Fails
-If SSH keeps asking for password:
-1. Make sure you ran `ssh-copy-id` correctly
-2. Check that the server allows key authentication
-3. Try connecting manually: `ssh isoflex_doghouse@isoflex.com`
-
-### Can't Find WordPress
-Log into the server and look around:
+### SSH Asks for Password
+If SSH suddenly asks for password again:
 ```bash
-ssh isoflex_doghouse@isoflex.com
-ls -la
-cd public_html  # or cd web
-ls -la
+ssh-copy-id -i ~/.ssh/id_ed25519.pub isoflex_doghouse@isoflex.com
+```
+Password: `2JkJ4XGJL3N24MSK`
+
+### Test SSH Connection
+```bash
+ssh isoflex_doghouse@isoflex.com "pwd"
+```
+Should return: `/home/isoflex_doghouse`
+
+### View All Sites on Server
+```bash
+ssh isoflex_doghouse@isoflex.com "ls -la ~/web/"
 ```
 
-### rsync Issues
-Make sure rsync is installed:
+### Permission Issues
+Make sure the theme directory is writable:
 ```bash
-which rsync
+ssh isoflex_doghouse@isoflex.com "chmod -R 755 ~/web/dev.isoflex.com/public_html/wp-content/themes/isoflex/"
 ```
 
-If not installed, you can use scp instead:
-```bash
-scp -r ./* isoflex_doghouse@isoflex.com:/path/to/theme/
-```
+---
+
+## Important Notes
+
+⚠️ **This deploys to DEVELOPMENT (dev.isoflex.com), not production!**
+✅ Production isoflex.com is hosted elsewhere and is safe from these deployments
+✅ SSH key authentication is configured - no password needed for deployments
+✅ The deployment script is already tested and working

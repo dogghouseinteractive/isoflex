@@ -283,16 +283,10 @@ function custom_image_sizes() {
     add_image_size( 'half_width_block', 768, 460, $crop = true );
 }
 
+
 /**
  * Gravity Forms Dynamic Isotope Quote Request Population
- * 
- * This code provides AJAX-powered dynamic population for:
- * 1. Elements dropdown
- * 2. Isotopes dropdown (based on selected element)
- * 3. Chemical Form dropdown (based on selected isotope variants)
- * 4. Physical Form dropdown (based on selected isotope variants)
- * 5. Enrichment Level dropdown (based on selected isotope variants)
- * 6. Quantity unit selector (based on selected isotope variants)
+ * With "Add to Quote" cart functionality
  */
 
 // ============================================================================
@@ -301,9 +295,7 @@ function custom_image_sizes() {
 
 /**
  * Populate Elements dropdown with all available elements
- * 
- * @param array $form The current form
- * @return array Modified form
+ * Only includes elements that have isotopes with valid variant data
  */
 add_filter('gform_pre_render_1', 'populate_elements_dropdown');
 add_filter('gform_pre_validation_1', 'populate_elements_dropdown');
@@ -313,6 +305,8 @@ add_filter('gform_admin_pre_render_1', 'populate_elements_dropdown');
 function populate_elements_dropdown($form) {
     foreach ($form['fields'] as &$field) {
         if ($field->id == '1') {
+            global $wpdb;
+            
             $choices = array();
             
             // Query all element posts
@@ -324,13 +318,69 @@ function populate_elements_dropdown($form) {
                 'post_status' => 'publish'
             ));
             
-            // Build choices array - no placeholder, will be set in Gravity Forms
+            // Add empty placeholder FIRST
+            $choices[] = array(
+                'text' => 'Select Element',
+                'value' => '',
+                'isSelected' => false
+            );
+            
+            // Filter elements to only include those with valid isotopes
             foreach ($elements as $element) {
-                $choices[] = array(
-                    'text' => $element->post_title,
-                    'value' => $element->ID,
-                    'isSelected' => false
-                );
+                // Get all isotopes for this element
+                $isotopes = get_posts(array(
+                    'post_type' => 'isotope',
+                    'posts_per_page' => -1,
+                    'post_status' => 'publish',
+                    'fields' => 'ids',
+                    'meta_query' => array(
+                        array(
+                            'key' => 'associated_element',
+                            'value' => '"' . $element->ID . '"',
+                            'compare' => 'LIKE'
+                        )
+                    )
+                ));
+                
+                if (empty($isotopes)) {
+                    continue;
+                }
+                
+                $has_valid_isotope = false;
+                
+                foreach ($isotopes as $isotope_id) {
+                    // Check for chemical_form or physical_form in isotope_variants
+                    $chemical_forms = $wpdb->get_results($wpdb->prepare(
+                        "SELECT meta_value FROM {$wpdb->postmeta} 
+                        WHERE post_id = %d 
+                        AND meta_key LIKE %s 
+                        AND meta_value != ''",
+                        $isotope_id,
+                        'isotope_variants_%_chemical_form'
+                    ));
+                    
+                    $physical_forms = $wpdb->get_results($wpdb->prepare(
+                        "SELECT meta_value FROM {$wpdb->postmeta} 
+                        WHERE post_id = %d 
+                        AND meta_key LIKE %s 
+                        AND meta_value != ''",
+                        $isotope_id,
+                        'isotope_variants_%_physical_form'
+                    ));
+                    
+                    if (!empty($chemical_forms) || !empty($physical_forms)) {
+                        $has_valid_isotope = true;
+                        break;
+                    }
+                }
+                
+                if ($has_valid_isotope) {
+                    $choices[] = array(
+                        'text' => $element->post_title,
+                        'value' => $element->ID,
+                        'isSelected' => false
+                    );
+                }
             }
             
             $field->choices = $choices;
@@ -346,6 +396,7 @@ function populate_elements_dropdown($form) {
 
 /**
  * AJAX Handler: Get isotopes for selected element
+ * Only returns isotopes that have isotope_variants with chemical_form OR physical_form
  */
 add_action('wp_ajax_get_isotopes_by_element', 'ajax_get_isotopes_by_element');
 add_action('wp_ajax_nopriv_get_isotopes_by_element', 'ajax_get_isotopes_by_element');
@@ -358,7 +409,6 @@ function ajax_get_isotopes_by_element() {
     }
     
     // Query isotopes associated with this element
-    // ACF relationship fields are stored as serialized arrays, so we need to use LIKE with the element ID
     $isotopes = get_posts(array(
         'post_type' => 'isotope',
         'posts_per_page' => -1,
@@ -374,14 +424,31 @@ function ajax_get_isotopes_by_element() {
         )
     ));
     
-    // Return choices without placeholder - placeholder set in Gravity Forms
     $choices = array();
     
+    // Filter isotopes to only include those with chemical_form OR physical_form in isotope_variants
     foreach ($isotopes as $isotope) {
-        $choices[] = array(
-            'text' => $isotope->post_title,
-            'value' => $isotope->ID
-        );
+        $variants = get_field('isotope_variants', $isotope->ID);
+        
+        if (!$variants || !is_array($variants)) {
+            continue;
+        }
+        
+        // Check if any variant has chemical_form or physical_form
+        $has_form = false;
+        foreach ($variants as $variant) {
+            if (!empty($variant['chemical_form']) || !empty($variant['physical_form'])) {
+                $has_form = true;
+                break;
+            }
+        }
+        
+        if ($has_form) {
+            $choices[] = array(
+                'text' => $isotope->post_title,
+                'value' => $isotope->ID
+            );
+        }
     }
     
     wp_send_json_success($choices);
@@ -389,6 +456,7 @@ function ajax_get_isotopes_by_element() {
 
 /**
  * AJAX Handler: Get variant options for selected isotope
+ * Returns which form type to display (chemical OR physical) and the available options
  */
 add_action('wp_ajax_get_isotope_variants', 'ajax_get_isotope_variants');
 add_action('wp_ajax_nopriv_get_isotope_variants', 'ajax_get_isotope_variants');
@@ -400,11 +468,13 @@ function ajax_get_isotope_variants() {
         wp_send_json_error('No isotope ID provided');
     }
     
-    // Get the variants repeater field
-    $variants = get_field('variants', $isotope_id);
+    // Get the isotope_variants repeater field
+    $variants = get_field('isotope_variants', $isotope_id);
     
     if (!$variants || !is_array($variants)) {
         wp_send_json_success(array(
+            'has_chemical_form' => false,
+            'has_physical_form' => false,
             'chemical_forms' => array(),
             'physical_forms' => array(),
             'enrichment_levels' => array(),
@@ -452,8 +522,11 @@ function ajax_get_isotope_variants() {
     sort($enrichment_levels);
     sort($qty_units);
     
-    // Format as Gravity Forms choices - no placeholders, set in Gravity Forms
+    // Format as Gravity Forms choices
     $response = array(
+        'has_chemical_form' => !empty($chemical_forms),
+        'has_physical_form' => !empty($physical_forms),
+        
         'chemical_forms' => array_map(function($value) {
             return array('text' => $value, 'value' => $value);
         }, array_values($chemical_forms)),
@@ -488,7 +561,7 @@ function enqueue_isotope_form_scripts($form, $is_ajax) {
         'isotope-form-ajax',
         get_stylesheet_directory_uri() . '/assets/js/isotope-form-ajax.js',
         array('jquery'),
-        '1.0.0',
+        '1.0.4',
         true
     );
     
@@ -502,11 +575,297 @@ function enqueue_isotope_form_scripts($form, $is_ajax) {
             'chemicalForm' => '5',
             'physicalForm' => '6',
             'enrichment' => '7',
-            'qtyUnit' => '8'
+            'qtyUnit' => '8',
+            'quantity' => '9',
+            'units' => '10',        
+            'comments' => '11', 
+            'cartData' => '12'
         )
     ));
 }
 
+// ============================================================================
+// CART DATA PROCESSING AND DISPLAY
+// ============================================================================
+
+/**
+ * Format cart data for display in entries and notifications
+ */
+add_filter('gform_entry_post_save', 'process_isotope_cart_data', 10, 2);
+
+function process_isotope_cart_data($entry, $form) {
+    // Only process form ID 1
+    if ($form['id'] != 1) {
+        return $entry;
+    }
+    
+    // Get the cart data from field 12
+    $cart_json = rgar($entry, '12');
+    
+    if (empty($cart_json)) {
+        return $entry;
+    }
+    
+    // Decode the JSON
+    $cart_items = json_decode($cart_json, true);
+    
+    if (!is_array($cart_items) || empty($cart_items)) {
+        return $entry;
+    }
+    
+    // Build a readable format - keep as plain text, no HTML
+    $formatted_output = "ISOTOPE QUOTE REQUEST\n";
+    $formatted_output .= str_repeat("=", 50) . "\n\n";
+    
+    foreach ($cart_items as $index => $item) {
+        $item_number = $index + 1;
+        $formatted_output .= "Item #{$item_number}\n";
+        $formatted_output .= str_repeat("-", 50) . "\n";
+        $formatted_output .= "Element: " . $item['element']['text'] . "\n";
+        $formatted_output .= "Isotope: " . $item['isotope']['text'] . "\n";
+        
+        if (!empty($item['chemicalForm'])) {
+            $formatted_output .= "Chemical Form: " . $item['chemicalForm'] . "\n";
+        }
+        
+        if (!empty($item['physicalForm'])) {
+            $formatted_output .= "Physical Form: " . $item['physicalForm'] . "\n";
+        }
+        
+        if (!empty($item['enrichment'])) {
+            $formatted_output .= "Enrichment Level: " . $item['enrichment'] . "\n";
+        }
+        
+        if (!empty($item['quantity'])) {
+            $formatted_output .= "Quantity: " . $item['quantity'];
+            if (!empty($item['qtyUnit'])) {
+                $formatted_output .= " " . $item['qtyUnit'];
+            }
+            $formatted_output .= "\n";
+        }
+
+        if (!empty($item['units'])) {
+            $formatted_output .= "Units: " . $item['units'] . "\n";
+        }
+        
+        if (!empty($item['comments'])) {
+            $formatted_output .= "Comments: " . $item['comments'] . "\n";
+        }
+        
+        $formatted_output .= "\n";
+    }
+    
+    // Update the entry with the formatted data
+    GFAPI::update_entry_field($entry['id'], '12', $formatted_output);
+    
+    return $entry;
+}
+
+/**
+ * Format cart data for email notifications with HTML
+ */
+add_filter('gform_notification', 'format_isotope_cart_for_email', 10, 3);
+
+function format_isotope_cart_for_email($notification, $form, $entry) {
+    // Only process form ID 1
+    if ($form['id'] != 1) {
+        return $notification;
+    }
+    
+    // Get the cart data from field 12
+    $cart_data = rgar($entry, '12');
+    
+    if (empty($cart_data)) {
+        return $notification;
+    }
+    
+    // Try to decode as JSON first (in case it hasn't been processed yet)
+    $cart_items = json_decode($cart_data, true);
+    
+    if (!is_array($cart_items)) {
+        // It's already formatted text, parse it
+        $html_output = '<div style="font-family: Arial, sans-serif; max-width: 800px; margin: 20px 0;">';
+        $html_output .= '<div style="background: #0073aa; color: white; padding: 20px; border-radius: 8px 8px 0 0;">';
+        $html_output .= '<h2 style="margin: 0; font-size: 24px;">Isotope Quote Request</h2>';
+        $html_output .= '</div>';
+        
+        // Split by "Item #" to get individual items
+        $items = preg_split('/Item #\d+\n-+\n/', $cart_data);
+        array_shift($items); // Remove the header part
+        
+        foreach ($items as $index => $item_text) {
+            if (empty(trim($item_text))) continue;
+            
+            $item_number = $index + 1;
+            $bg_color = ($index % 2 == 0) ? '#f9f9f9' : '#ffffff';
+            
+            $html_output .= '<div style="background: ' . $bg_color . '; padding: 20px; border-bottom: 1px solid #ddd;">';
+            $html_output .= '<h3 style="color: #0073aa; margin-top: 0; margin-bottom: 15px; font-size: 18px;">Item #' . $item_number . '</h3>';
+            $html_output .= '<table style="width: 100%; border-collapse: collapse;">';
+            
+            // Parse each line
+            $lines = explode("\n", trim($item_text));
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if (empty($line)) continue;
+                
+                if (strpos($line, ':') !== false) {
+                    list($label, $value) = explode(':', $line, 2);
+                    $label = trim($label);
+                    $value = trim($value);
+                    
+                    $html_output .= '<tr>';
+                    $html_output .= '<td style="padding: 8px 12px; font-weight: bold; color: #555; width: 180px; vertical-align: top;">' . esc_html($label) . ':</td>';
+                    $html_output .= '<td style="padding: 8px 12px; color: #333;">' . esc_html($value) . '</td>';
+                    $html_output .= '</tr>';
+                }
+            }
+            
+            $html_output .= '</table>';
+            $html_output .= '</div>';
+        }
+        
+        $html_output .= '<div style="background: #f5f5f5; padding: 15px; text-align: center; color: #666; font-size: 12px; border-radius: 0 0 8px 8px;">';
+        $html_output .= 'Total Items: ' . count($items);
+        $html_output .= '</div>';
+        $html_output .= '</div>';
+        
+        // Replace the field merge tag with formatted HTML
+        $notification['message'] = str_replace('{Isotope Items:12}', $html_output, $notification['message']);
+        
+        return $notification;
+    }
+    
+    // It's JSON, format it nicely
+    if (empty($cart_items)) {
+        return $notification;
+    }
+    
+    $html_output = '<div style="font-family: Arial, sans-serif; max-width: 800px; margin: 20px 0;">';
+    $html_output .= '<div style="background: #0073aa; color: white; padding: 20px; border-radius: 8px 8px 0 0;">';
+    $html_output .= '<h2 style="margin: 0; font-size: 24px;">Isotope Quote Request</h2>';
+    $html_output .= '</div>';
+    
+    foreach ($cart_items as $index => $item) {
+        $item_number = $index + 1;
+        $bg_color = ($index % 2 == 0) ? '#f9f9f9' : '#ffffff';
+        
+        $html_output .= '<div style="background: ' . $bg_color . '; padding: 20px; border-bottom: 1px solid #ddd;">';
+        $html_output .= '<h3 style="color: #0073aa; margin-top: 0; margin-bottom: 15px; font-size: 18px;">Item #' . $item_number . '</h3>';
+        $html_output .= '<table style="width: 100%; border-collapse: collapse;">';
+        
+        $html_output .= '<tr><td style="padding: 8px 12px; font-weight: bold; color: #555; width: 180px;">Element:</td><td style="padding: 8px 12px; color: #333;">' . esc_html($item['element']['text']) . '</td></tr>';
+        $html_output .= '<tr><td style="padding: 8px 12px; font-weight: bold; color: #555;">Isotope:</td><td style="padding: 8px 12px; color: #333; font-weight: bold;">' . esc_html($item['isotope']['text']) . '</td></tr>';
+        
+        if (!empty($item['chemicalForm'])) {
+            $html_output .= '<tr><td style="padding: 8px 12px; font-weight: bold; color: #555;">Chemical Form:</td><td style="padding: 8px 12px; color: #333;">' . esc_html($item['chemicalForm']) . '</td></tr>';
+        }
+        
+        if (!empty($item['physicalForm'])) {
+            $html_output .= '<tr><td style="padding: 8px 12px; font-weight: bold; color: #555;">Physical Form:</td><td style="padding: 8px 12px; color: #333;">' . esc_html($item['physicalForm']) . '</td></tr>';
+        }
+        
+        if (!empty($item['enrichment'])) {
+            $html_output .= '<tr><td style="padding: 8px 12px; font-weight: bold; color: #555;">Enrichment Level:</td><td style="padding: 8px 12px; color: #333;">' . esc_html($item['enrichment']) . '</td></tr>';
+        }
+        
+        if (!empty($item['quantity'])) {
+            $qty_display = esc_html($item['quantity']);
+            if (!empty($item['qtyUnit'])) {
+                $qty_display .= ' ' . esc_html($item['qtyUnit']);
+            }
+            $html_output .= '<tr><td style="padding: 8px 12px; font-weight: bold; color: #555;">Quantity:</td><td style="padding: 8px 12px; color: #333;">' . $qty_display . '</td></tr>';
+        }
+
+        if (!empty($item['units'])) {
+            $html_output .= '<tr><td style="padding: 8px 12px; font-weight: bold; color: #555;">Units:</td><td style="padding: 8px 12px; color: #333;">' . esc_html($item['units']) . '</td></tr>';
+        }
+
+        if (!empty($item['comments'])) {
+            $html_output .= '<tr><td style="padding: 8px 12px; font-weight: bold; color: #555;">Comments:</td><td style="padding: 8px 12px; color: #333;">' . nl2br(esc_html($item['comments'])) . '</td></tr>';
+        }
+        
+        $html_output .= '</table>';
+        $html_output .= '</div>';
+    }
+    
+    $html_output .= '<div style="background: #f5f5f5; padding: 15px; text-align: center; color: #666; font-size: 12px; border-radius: 0 0 8px 8px;">';
+    $html_output .= 'Total Items: ' . count($cart_items);
+    $html_output .= '</div>';
+    $html_output .= '</div>';
+    
+    // Replace the field merge tag with formatted HTML
+    $notification['message'] = str_replace('{Isotope Items:12}', $html_output, $notification['message']);
+    
+    return $notification;
+}
+
+/**
+ * Change the label for field 12 in entry detail view
+ * Display as formatted table instead of plain text
+ */
+add_filter('gform_entry_field_value', 'format_isotope_cart_entry_display', 10, 4);
+
+function format_isotope_cart_entry_display($value, $field, $entry, $form) {
+    // Only process field 12 on form 1
+    if ($form['id'] != 1 || $field->id != 12) {
+        return $value;
+    }
+    
+    // Check if this is JSON data
+    $cart_items = json_decode($value, true);
+    
+    // If it's not valid JSON, display the formatted text
+    if (!is_array($cart_items)) {
+        // It's the formatted text version
+        $value = str_replace('<br />', '', $value); // Remove any br tags
+        return '<pre style="background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; font-family: monospace;">' . esc_html($value) . '</pre>';
+    }
+    
+    if (empty($cart_items)) {
+        return $value;
+    }
+    
+    // Build HTML table for admin view
+    $html = '<div style="margin: 20px 0;">';
+    $html .= '<h3 style="margin-top: 0;">Isotope Quote Request Items</h3>';
+    $html .= '<table style="width: 100%; border-collapse: collapse; border: 1px solid #ddd;">';
+    $html .= '<thead><tr style="background: #0073aa; color: white;">';
+    $html .= '<th style="border: 1px solid #ddd; padding: 10px; text-align: left;">#</th>';
+    $html .= '<th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Element</th>';
+    $html .= '<th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Isotope</th>';
+    $html .= '<th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Chemical Form</th>';
+    $html .= '<th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Physical Form</th>';
+    $html .= '<th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Enrichment</th>';
+    $html .= '<th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Quantity</th>';
+    $html .= '<th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Units</th>';
+    $html .= '<th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Comments</th>';
+    $html .= '</tr></thead><tbody>';
+    
+    foreach ($cart_items as $index => $item) {
+        $html .= '<tr' . ($index % 2 == 0 ? ' style="background: #f9f9f9;"' : '') . '>';
+        $html .= '<td style="border: 1px solid #ddd; padding: 10px; text-align: center;"><strong>' . ($index + 1) . '</strong></td>';
+        $html .= '<td style="border: 1px solid #ddd; padding: 10px;">' . esc_html($item['element']['text']) . '</td>';
+        $html .= '<td style="border: 1px solid #ddd; padding: 10px;"><strong>' . esc_html($item['isotope']['text']) . '</strong></td>';
+        $html .= '<td style="border: 1px solid #ddd; padding: 10px;">' . (esc_html($item['chemicalForm']) ?: '—') . '</td>';
+        $html .= '<td style="border: 1px solid #ddd; padding: 10px;">' . (esc_html($item['physicalForm']) ?: '—') . '</td>';
+        $html .= '<td style="border: 1px solid #ddd; padding: 10px;">' . (esc_html($item['enrichment']) ?: '—') . '</td>';
+        
+        $qty_display = $item['quantity'] ? esc_html($item['quantity']) : '—';
+        if (!empty($item['qtyUnit']) && !empty($item['quantity'])) {
+            $qty_display .= ' ' . esc_html($item['qtyUnit']);
+        }
+        $html .= '<td style="border: 1px solid #ddd; padding: 10px;">' . $qty_display . '</td>';
+        $html .= '<td style="border: 1px solid #ddd; padding: 10px;">' . (esc_html($item['units']) ?: '—') . '</td>';
+        $html .= '<td style="border: 1px solid #ddd; padding: 10px;">' . (esc_html($item['comments']) ?: '—') . '</td>';
+        $html .= '</tr>';
+    }
+    
+    $html .= '</tbody></table>';
+    $html .= '</div>';
+    
+    return $html;
+}
 
 /**
  * Convert product_catalog_json to ACF Isotope Variants repeater
